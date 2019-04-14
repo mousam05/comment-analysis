@@ -3,47 +3,58 @@ import re
 import os
 import pickle
 import csv
+import editdistance
 
 from nltk.stem import PorterStemmer
-
 from nltk.tag.stanford import StanfordPOSTagger
 from nltk.parse.stanford import StanfordDependencyParser
 
 ps = PorterStemmer()
-EDIT_DISTANCE_THRESHOLD = 2
 
-COL_TYPE = 7
-COL_LINE_BEGIN = 9
-COL_LINE_END = 10
+EDIT_DISTANCE_APPLICATION_THRESHOLD = 6
+EDIT_DISTANCE_MATCH_THRESHOLD = 2
 
-ROOT_PATH = "/home/mousam/Downloads/mtp2"
-VOCABDICT_PATH = ROOT_PATH + "/ParserCheck/VocabDictionary.csv"
-CORPUS_PATH = ROOT_PATH + "/codebases/corpus.csv"
+ROOT_PATH = os.getcwd()
+PROGRAM_DOMAIN_CONCEPTS_FILE_PATH =  os.path.join(ROOT_PATH, "ProgramDomainConcepts.p")
+PROBLEM_DOMAIN_CONCEPTS_FILE_NAME = "ProblemDomainConcepts.txt"
+PROBLEM_DOMAIN_CONCEPTS_GRAM_LENGTH = 3
+
+CATEGORY_COUNT = 30
+CAT_CONCEPTS_MATCH_SYMBOLS = 1
+CAT_CONCEPTS_MATCH_TYPE = 2
+CAT_CONCEPTS_NOT_MATCH_SYMBOLS = 3
+CAT_CONCEPTS_PARTIALLY_MATCH_SYMBOLS = 4
+CAT_CONCEPTS_MATCH_STRUCTURE = 5
+CAT_NO_PROGRAM_DOMAIN_CONCEPTS = 6
+CAT_NO_PROBLEM_DOMAIN_CONCEPTS = 7
+CAT_LOW_PROGRAM_DOMAIN_CONCEPTS = 8
+CAT_HIGH_PROGRAM_DOMAIN_CONCEPTS = 9
+CAT_LOW_PROBLEM_DOMAIN_CONCEPTS = 10
+CAT_HIGH_PROBLEM_DOMAIN_CONCEPTS = 11
+CAT_CODE_COMMENT = 12
+CAT_SHORT = 13
+CAT_HIGH_SCOPE = 14
+CAT_LOW_SCOPE = 15
+CAT_COPYRIGHT_LICENSE = 16
+CAT_DATE = 17
+CAT_EMAIL = 18
+CAT_CONTACT = 19
+CAT_BUG_VERSION = 20
+CAT_AUTHOR_NAME = 21
+CAT_BUILD = 22
+CAT_EXCEPTION = 23
+CAT_PERFORMANCE = 24
+CAT_DESIGN = 25
+CAT_MEMORY = 26
+CAT_SYSTEM_SPEC = 27
+CAT_LIBRARY = 28
+CAT_OUTPUT_RETURN = 29
+CAT_JUNK = 30
+
+OUTPUT_COMMENTS_FILE_PATH = os.path.join(ROOT_PATH, "comments.csv")
 
 stanford_pos_tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
-stanford_dep_parser = StanfordDependencyParser(model_path="edu/stanford/nlp/models/lexparser/englishPCFG.ser.gz")
-
-def get_edit_distance(str1, str2, m, n): 
-	dp = [[0 for x in range(n+1)] for x in range(m+1)] 
-  
-	for i in range(m+1): 
-		for j in range(n+1): 
-  
-			if i == 0: 
-				dp[i][j] = j
-  
-			elif j == 0: 
-				dp[i][j] = i
-  
-			elif str1[i-1] == str2[j-1]: 
-				dp[i][j] = dp[i-1][j-1] 
-
-			else: 
-				dp[i][j] = 1 + min(dp[i][j-1],        # Insert substr
-								   dp[i-1][j],        # Remove 
-								   dp[i-1][j-1])    # Replace 
-  
-	return dp[m][n] 
+stanford_dep_parser = StanfordDependencyParser(model_path=os.path.join("edu", "stanford", "nlp", "models", "lexparser", "englishPCFG.ser.gz"))
 
 def get_ngrams(tokens, n):
 	result = []
@@ -55,85 +66,56 @@ def get_ngrams(tokens, n):
 		result.append(ngram[1:])
 	return result
 
-def find_comment_concepts(comment, data_dict):
+def find_program_domain_concepts(comment, program_domain_concepts_dict):
+
+	comment = comment.lower()
+	concepts = {}
 	tokens = comment.split()
+
+	# attempt 1: stemming
+	for token in tokens:
+		token = token.strip(" .!,&()-={}[]\/\\\"\';:<>\n\t")
+		stemmed_token = ps.stem(token)
+		if stemmed_token in program_domain_concepts_dict:
+			concepts[token] = [stemmed_token, program_domain_concepts_dict[stemmed_token]]
+
+
 	bigrams = get_ngrams(tokens, 2)
 	trigrams = get_ngrams(tokens, 3)
-
 	tokens.extend(bigrams)
 	tokens.extend(trigrams)
 
-	concepts = {}
-
+	# attempt 2: edit-distance
 	for token in tokens:
-		matched = []
-		for row in data_dict:
-			#stemmed_token = ps.stem(token)
-			stemmed_token = token
-			if get_edit_distance(stemmed_token.lower(), row[0].lower(),
-				len(stemmed_token), len(row[0])) <= EDIT_DISTANCE_THRESHOLD:
-				matched.append(row)
-
-		if len(matched):
-			concepts[token] = matched
+		if len(token) >= EDIT_DISTANCE_APPLICATION_THRESHOLD:
+			for concept in program_domain_concepts_dict:
+				if editdistance.eval(token, concept) <= EDIT_DISTANCE_MATCH_THRESHOLD:
+					concepts[token] = [concept, program_domain_concepts_dict[concept]]
 
 	return concepts
 
-def get_symbol_types_and_scopes(symbols_db):
-	tables = list(symbols_db.values())
-	result = []
-	for table in tables:
-		for table_row in table[1]:
-			result.append((table_row[COL_TYPE], table_row[COL_LINE_BEGIN], table_row[COL_LINE_END]))
+
+def find_problem_domain_concepts_grams(problem_domain_concepts_list):
+
+	result = set()
+	for concept in problem_domain_concepts_list:
+		for gram_length in range(1, min(len(concept.split()), PROBLEM_DOMAIN_CONCEPTS_GRAM_LENGTH) + 1):
+			result.update(get_ngrams(concept.split(), gram_length))
 
 	return result
 
-def find_comment_scope(comment, fr_line, to_line, symbols_db):
-	types_scopes = get_symbol_types_and_scopes(symbols_db)
+def find_problem_domain_concepts(comment, problem_domain_concepts_grams):
 
+	comment = comment.lower()
+	result = set()
+	for gram in problem_domain_concepts_grams:
+		if gram in comment:
+			result.add(gram)
 
-	blocktypes = ['CompoundStmt', 'Function', 'IfStmt', 'WhileStmt',
-		'ForStmt', 'DoStmt', 'SwitchStmt', 'CaseStmt']
+	return list(result)
 
-	max_line = -1
-	line_nos = set()
-	for entry in types_scopes:
-		line_nos.update([entry[1], entry[2]])
-		if(max_line < entry[1]):
-			max_line = entry[1]
-		if(max_line < entry[2]):
-			max_line = entry[2]
-
-	#case 1: comment and code on same line
-
-	#give priority to block types
-	for entry in types_scopes:
-		if fr_line == entry[1] or fr_line == entry[2]:
-			if entry[0] in blocktypes:
-				return (entry[1], entry[2])
-
-	#if block type is not found, consider other types
-	for entry in types_scopes:
-		if fr_line == entry[1] or fr_line == entry[2]:
-			return (entry[1], entry[2])
-
-	#case 2: comment and code on different lines
-	fr_line_new = to_line + 1
-
-	while fr_line_new not in line_nos and fr_line_new < max_line:
-		fr_line_new = fr_line_new + 1
-
-	for entry in types_scopes:
-		if fr_line_new == entry[1] or fr_line_new == entry[2]:
-			if entry[0] in blocktypes:
-				return (entry[1], entry[2])
-
-	for entry in types_scopes:
-		if fr_line_new == entry[1] or fr_line_new == entry[2]:
-			return (entry[1], entry[2])
-
-	# default case: scope is same as comment start and end lines
-	return (fr_line, to_line)
+# def find_scope(comment, fr_line, to_line):
+# 	TODO
 
 
 def is_verb(tag):
@@ -154,7 +136,7 @@ def is_conditional(postags, dependencies):
 # VERB_ROOT:  there is a verb (VB, VBZ, VBN, VBP, VBG, VBD) tag as ROOT
 # VERB_AUXILIARY: the ROOT is not verb, but there is an auxiliary verb
 # 
-def find_comment_nlp_categories(comment):
+def find_nlp_categories(comment):
 	result = []
 
 	postags = stanford_pos_tagger.tag(comment.split())
@@ -183,101 +165,295 @@ def find_comment_nlp_categories(comment):
 
 	return result
 
-# extracts all comments from a c/cpp file using regexes,
-# returns starting line no, ending line no, comment text
-def find_comments(text):
-	pattern = re.compile( r'//.*?$|/\*.*?\*/', re.DOTALL | re.MULTILINE).findall(text)
-	pattern1 = re.compile( r'//.*?$|/\*.*?\*/', re.DOTALL | re.MULTILINE)
-	l = [(m.start(0), m.end(0)) for m in re.finditer(pattern1, text)]		
-	pos = 0
-	fr = []
-	to = []
-	for item in pattern:
+def matches_with_keywords(text, keywords):
+	text = text.lower()
+
+	for keyword in keywords:
+		if keyword in text:
+			return True
+
+	return False
+
+def is_copyright_or_license_comment(comment):
+
+	keywords = [
+				"copyright", "copyleft", "copy-right", "license", "licence", "trademark", "open source", "open-source"
+				]
+	return matches_with_keywords(comment, keywords)
+
+def is_bug_or_version_related_comment(comment):
+
+	keywords = [
+				" bug", "bug #", "bugid", "bug id", "bug number", "bug no", "bugno", "bugzilla",    # debug should not match
+				" fix", "fix #", "fixid", "fix id", "fix number", "fix no", "fixno",   				# postfix, suffix etc should not match
+				"patch", "patch #", "patchid", "patch id", "patch number", "patch no", "patchno",
+				]
+
+	return matches_with_keywords(comment, keywords) or \
+		((re.search("bug [0-9]|fix [0-9]|version [0-9]", comment) is not None) and not is_copyright_or_license_comment(comment))
+
+
+
+def is_build_related_comment(comment):
+
+	keywords = [
+				"cmake", "makefile", "build", "g++", "gcc", "dependencies", "apt-get",
+				"git clone", "debug", "bin/"
+				]
+
+	return matches_with_keywords(comment, keywords)
+
+def is_system_spec_related_comment(comment):
+
+	keywords = [
+				"ubuntu", "endian", "gpu", "hyperthreading", "32-bit", "64-bit", "128-bit", "configuration", "specification"
+				"32bit", "64bit", "128bit", "configure"
+				]
+
+	return matches_with_keywords(comment, keywords) or (re.search("[0-9] [gG][bB]|[0-9] [mM][bB]|[0-9] [kK][bB]|Windows", comment) is not None)
+
+def is_author_name_comment(comment):
+	keywords = [
+				"written by", "coded by", "developed by", "edited by", "modified by", "author", "contact",
+				"fixed by"
+				]
+	return matches_with_keywords(comment, keywords)
+
+def is_date_comment(comment):
+	keywords = [
+				"date of", "edited on", "written on", "created on", "modified on"
+				]
+
+	return matches_with_keywords(comment, keywords) or \
+		(re.search("\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{1,2}[\-\/][a-zA-Z]{3}[\-\/]\d{2,4}", comment) is not None)
+
+def is_email_comment(comment):
+	keywords = [
+				"mail dot com", "mail dot in", "email"
+				]
+
+	return matches_with_keywords(comment, keywords) or \
+		(re.search("([a-zA-Z0-9_\-\.]+)@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.)|(([a-zA-Z0-9\-]+\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\]?)", comment) is not None)
+
+
+def is_todo_comment(comment):
+
+	keywords = ["todo", "to-do"]
+	return matches_with_keywords(comment, keywords)
+
+def is_junk_comment(comment):
+	# there are no letters or numbers in the comment
+	return re.search("[a-zA-Z0-9]", comment) is None
+
+def get_comments(filename):
+
+	file = open(filename , "r")
+	text = file.read()
+	file.close()
+	file = open(filename , "r")
+	lines = file.readlines()
+	file.close()
+
+	all_comments = re.compile( r'//.*?$|/\*.*?\*/', re.DOTALL | re.MULTILINE).findall(text)
+	comment_iterator = re.compile( r'//.*?$|/\*.*?\*/', re.DOTALL | re.MULTILINE)
+	l = [(m.start(0), m.end(0)) for m in re.finditer(comment_iterator, text)]	
+
+	start_line = []
+	end_line = []
+	for pos in range(0, len(all_comments)):
 		location = l[pos][0]
-		s = text[:location+1]
+		s = text[:location + 1]
 		lineNo1 = s.count('\n') + 1
 		location1 = l[pos][1]
 		s = text[:location1 + 1]
 		lineNo2 = s.count('\n')
-		fr.append(lineNo1)
-		to.append(lineNo2)
-		print ("lineNo : ",lineNo1 , " to " , lineNo2  , " matched : " , item)
-		pos = pos + 1
-		
-	return fr, to, pattern
+		start_line.append(lineNo1)
+		end_line.append(lineNo2)
 
-
-def extract_comments_info(filename, symbols_db, data_dict):
-	codefile = open(filename,'r')
-	lines=codefile.read()
-	result = []
-	fr , to , list_of_comments = find_comments(lines)
-	pos = 0
-	for comment in list_of_comments:
-
-		if comment[0:2] == "//":
-			comment_to_write = comment[2:]
+		if all_comments[pos].startswith("//"):
+			all_comments[pos] = all_comments[pos][2:]
 		else:
-			comment_to_write = comment[2:-2]
-			
-		l = []
+			all_comments[pos] = all_comments[pos][2:-2]
 
-		comment_to_write = comment_to_write.strip()
-		comment_tokens = comment_to_write.split()
-		concepts = find_comment_concepts(comment_to_write, data_dict)
-		scope = find_comment_scope(comment_to_write, fr[pos], to[pos], symbols_db)
-		nlp_categories = find_comment_nlp_categories(comment_to_write)
+		all_comments[pos] = all_comments[pos].strip()
 
-		if len(comment_to_write)!=0:
-			l.append(os.path.abspath(filename))
-			l.append(fr[pos])
-			l.append(to[pos])
-			l.append(comment_to_write)
-			#l.append(repr(comment_tokens))
-			l.append(repr(concepts))
-			l.append(repr(nlp_categories))
-			l.append(repr(scope))
-			result.append(l)
-			
-		pos = pos + 1
+
+	result = []
+
+	for pos in range(0, len(all_comments)):
+
+		text = all_comments[pos]
+		start = start_line[pos]
+		end = end_line[pos]
+
+		#bundling consecutive single line comments
+		if len(result) > 0 and lines[start - 1].strip().startswith("//") and result[-1][2] == start - 1:
+			result[-1][0] = result[-1][0] + "\n" + text
+			result[-1][2] = start
+
+		else:
+			result.append([text, start, end])
+
 	return result
 
+def extract_comments_info(filename, program_domain_concepts_dict, problem_domain_concepts_grams):
 
-def process_file(filename, data_dict, corpus):
-	if not (filename.endswith(".c") or filename.endswith(".cpp")):
-		print ("Skipping " + filename)
-		return
+	result = []
+	comments = get_comments(filename)
 
-	if os.path.isfile(filename + ".symbols"):
-		with open(filename + ".symbols", "rb") as fp:
-			symbols_db = pickle.load(fp)
-			fp.close()
+	for comment in comments:
+
+		[comment_text, start_line, end_line] = comment
+		number_of_words = len(comment_text.split())
+		program_domain_concepts = find_program_domain_concepts(comment_text, program_domain_concepts_dict)
+		problem_domain_concepts = find_problem_domain_concepts(comment_text, problem_domain_concepts_grams)
+		# scope = find_scope(comment_text, start_line, end_line)
+		# nlp_categories = find_nlp_categories(comment_text)
+		is_copyright_or_license = is_copyright_or_license_comment(comment_text)
+		is_bug_or_version_related = is_bug_or_version_related_comment(comment_text)
+		is_build_related = is_build_related_comment(comment_text)
+		is_system_spec_related = is_system_spec_related_comment(comment_text)
+		is_authorship_related = is_author_name_comment(comment_text)
+		is_email = is_email_comment(comment_text)
+		is_date = is_date_comment(comment_text)
+		is_todo = is_todo_comment(comment_text)
+		is_junk = is_junk_comment(comment_text)
+		
+		entry = []
+		if len(comment_text) != 0:
+			entry.append(filename)
+			entry.append(comment_text)
+			entry.append(start_line)
+			entry.append(end_line)
+			entry.append(repr(number_of_words))
+			entry.append(repr(program_domain_concepts))
+			entry.append(repr(problem_domain_concepts))
+			# entry.append(repr(scope))
+			# entry.append(repr(nlp_categories))
+			entry.append(repr(is_copyright_or_license))
+			entry.append(repr(is_bug_or_version_related))
+			entry.append(repr(is_build_related))
+			entry.append(repr(is_system_spec_related))
+			entry.append(repr(is_authorship_related))
+			entry.append(repr(is_email))
+			entry.append(repr(is_date))
+			entry.append(repr(is_todo))
+			entry.append(repr(is_junk))
+
+			# categories
+			categories = [False] * CATEGORY_COUNT
+			if len(program_domain_concepts) == 0:
+				categories[CAT_NO_PROGRAM_DOMAIN_CONCEPTS - 1] = True
+			elif len(program_domain_concepts) < 3:
+				categories[CAT_LOW_PROGRAM_DOMAIN_CONCEPTS - 1] = True
+			else:
+				categories[CAT_HIGH_PROGRAM_DOMAIN_CONCEPTS - 1] = True
+
+			if len(problem_domain_concepts) == 0:
+				categories[CAT_NO_PROBLEM_DOMAIN_CONCEPTS - 1] = True
+			elif len(problem_domain_concepts) < 3:
+				categories[CAT_LOW_PROBLEM_DOMAIN_CONCEPTS - 1] = True
+			else:
+				categories[CAT_HIGH_PROBLEM_DOMAIN_CONCEPTS - 1] = True
+
+			categories[CAT_SHORT - 1] = (number_of_words < 4)
+			categories[CAT_COPYRIGHT_LICENSE - 1] = is_copyright_or_license
+			categories[CAT_DATE - 1] = is_date
+			categories[CAT_EMAIL - 1] = is_email
+			categories[CAT_BUG_VERSION - 1] = is_bug_or_version_related
+			categories[CAT_AUTHOR_NAME - 1] = is_authorship_related
+			categories[CAT_BUILD - 1] = is_build_related
+			categories[CAT_SYSTEM_SPEC - 1] = is_system_spec_related
+			categories[CAT_JUNK - 1] = is_junk
+
+			categories_1_or_blank = []
+			for category in categories:
+				if category:
+					categories_1_or_blank.append("1")
+				else:
+					categories_1_or_blank.append("")
+
+			entry.extend(categories_1_or_blank)
+			result.append(entry)
+			
+	return result
+
+def get_column_headings():
+	headings = [
+			"Filename",
+			"Comment text",
+			"Start line",
+			"End line",
+			"No. of words",
+			"Program Domain Concepts",
+			"Problem Domain Concepts",
+			# "Scope",
+			# "NLP categories",
+			"Copyright/License",
+			"Bug/Fix/Patch/Version",
+			"Build",
+			"System spec",
+			"Authorship",
+			"Email",
+			"Date",
+			"Todo",
+			"Junk"
+			]
+	headings.extend([("C" + repr(i)) for i in range(1, CATEGORY_COUNT + 1)])
+	return headings
+
+
+def get_problem_domain_concepts_list(pathname):
+	problem_domain_concepts_file_path = os.path.join(pathname, PROBLEM_DOMAIN_CONCEPTS_FILE_NAME)
+	if not os.path.isfile(problem_domain_concepts_file_path):
+		print("Problem domain concepts file not found in folder " + pathname)
+		return []
 	else:
-		symbols_db = {}
-		print ("Warning: Symbols file not found for " + filename)
+		problem_domain_concepts_file = open(problem_domain_concepts_file_path, "r")
+		problem_domain_concepts_list = problem_domain_concepts_file.readlines()
+		problem_domain_concepts_file.close()
 
-	result = extract_comments_info(filename, symbols_db, data_dict)
+		problem_domain_concepts_list = set([concept.strip() for concept in problem_domain_concepts_list])
+		if "" in problem_domain_concepts_list:
+			problem_domain_concepts_list.remove("")
+		return list(problem_domain_concepts_list)
+
+def process_file(filename, program_domain_concepts_dict, problem_domain_concepts_grams, comments_file):
+
+	print ("Processing " + filename)
+	result = extract_comments_info(filename, program_domain_concepts_dict, problem_domain_concepts_grams)
 
 	for result_row in result:
-		corpus.writerow(result_row)
-
+		comments_file.writerow(result_row)
 
 if __name__ == "__main__":
 
-	data_dict = csv.reader(open(VOCABDICT_PATH), delimiter=',')
-	corpus = csv.writer(open(CORPUS_PATH, "a"), delimiter='$', quoting=csv.QUOTE_MINIMAL)
+	if not os.path.isfile(PROGRAM_DOMAIN_CONCEPTS_FILE_PATH):
+		print ("Program domain concepts file not found in cwd")
+
+	program_domain_concepts_file = open(PROGRAM_DOMAIN_CONCEPTS_FILE_PATH, "rb")
+	program_domain_concepts_dict = pickle.load(program_domain_concepts_file)
+
+	if not os.path.isfile(OUTPUT_COMMENTS_FILE_PATH):
+		comments_file = csv.writer(open(OUTPUT_COMMENTS_FILE_PATH, "w"), delimiter = '$', quoting = csv.QUOTE_MINIMAL)
+		col_headings = get_column_headings()
+		comments_file.writerow(col_headings)
+
+	else:
+		comments_file = csv.writer(open(OUTPUT_COMMENTS_FILE_PATH, "a"), delimiter = '$', quoting = csv.QUOTE_MINIMAL)
 
 	for pathname in sys.argv[1:]:
 
-		if pathname.endswith("/"):
-			pathname = pathname[:-1]
+		if os.path.isdir(pathname):
 
-		if os.path.isdir(pathname) == True:
+			problem_domain_concepts_grams = find_problem_domain_concepts_grams(get_problem_domain_concepts_list(pathname))
+			print ("Problem domain concepts set: " + repr(problem_domain_concepts_grams))
 
-			files = os.listdir(pathname)
-			for file in files:
-				filename = pathname + "/" + file
-				process_file(filename, data_dict, corpus)
+			for root, directories, files in os.walk(pathname):
+				for file in files: 
+					if file.endswith(".c") or file.endswith(".cpp"):
+						filename =  os.path.join(root, file)
+						process_file(filename, program_domain_concepts_dict, problem_domain_concepts_grams, comments_file)
 
 		else:
-			process_file(pathname, data_dict, corpus)
+			print ("You must pass a folder name")
